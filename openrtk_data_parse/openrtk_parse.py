@@ -417,6 +417,10 @@ class UserRawParse:
         self.log_files = {}
         self.f_nmea = None
         self.f_process = None
+        self.f_imu = None
+        self.f_odo = None
+        self.f_gnssposvel = None
+        self.f_ins = None
         self.f_gnss_kml = None
         self.f_ins_kml = None
         self.gnssdata = []
@@ -475,6 +479,10 @@ class UserRawParse:
             self.pkfmt[x['name']] = fmt_dic
         
         self.f_process = open(self.path[0:-1] + '-process', 'w')
+        self.f_gnssposvel = open(self.path[0:-1] + '-gnssposvel.txt', 'w')
+        self.f_imu = open(self.path[0:-1] + '-imu.txt', 'w')
+        self.f_odo = open(self.path[0:-1] + '-odo.txt', 'w')
+        self.f_ins = open(self.path[0:-1] + '-ins.txt', 'w')
         self.f_nmea = open(self.path[0:-1] + '-nmea', 'wb')
         self.f_gnss_kml = open(self.path[0:-1] + '-gnss.kml', 'w')
         self.f_ins_kml = open(self.path[0:-1] + '-ins.kml', 'w')
@@ -570,6 +578,9 @@ class UserRawParse:
                 + "<coordinates>\n"
 
         for pos in self.gnssdata:
+            if pos[2] == 0:
+                continue
+
             gnss_track += format(pos[4], ".9f") + ',' + format(pos[3], ".9f") + ',' + format(pos[5], ".3f") + '\n'
 
         gnss_track += "</coordinates>\n"\
@@ -582,55 +593,58 @@ class UserRawParse:
         for i, pos in enumerate(self.gnssdata):
             ep = self.weeksecondstoutc(pos[0], pos[1]/1000, -18)
             ep_sp = time.strptime(ep, "%Y-%m-%d %H:%M:%S")
-
-            track_ground = math.atan2(pos[14], pos[13]) * (57.295779513082320)
-
-            gnss_track += "<Placemark>\n"
-            if i <= 1:
-                gnss_track += "<name>Start</name>\n"
-            elif i == len(self.gnssdata)-1:
-                gnss_track += "<name>End</name>\n"
-            else:
-                if math.fmod(ep_sp[5]+(pos[1]%1000)/1000+0.025, 30) < 0.05:
-                    gnss_track += "<name>"\
-                        + "%02d" % ep_sp[3] + "%02d" % ep_sp[4] + "%02d" % ep_sp[5]\
-                        + "</name>\n"
-
-            gnss_track += "<TimeStamp><when>"\
-                    + time.strftime("%Y-%m-%dT%H:%M:%S.", ep_sp)\
-                    + "%02dZ" % ((pos[1]%1000)/10)\
-                    + "</when></TimeStamp>\n"
-
-            gnss_track += "<description><![CDATA[\n"\
-                + "<TABLE border=\"1\" width=\"100%\" Align=\"center\">\n"\
-                + "<TR ALIGN=RIGHT>\n"\
-                + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Time:</TD><TD>"\
-                + str(pos[0]) + "</TD><TD>" + "%.3f" % (pos[1]/1000) + "</TD><TD>"\
-                + "%2d:%2d:%7.4f" % (ep_sp[3],ep_sp[4],ep_sp[5]+(pos[1]%1000)/1000) + "</TD><TD>"\
-                + "%4d/%2d/%2d" % (ep_sp[0], ep_sp[1], ep_sp[2]) + "</TD></TR>\n"\
-                + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Position:</TD><TD>"\
-                + "%.8f" % pos[3] + "</TD><TD>" + "%.8f" % pos[4] + "</TD><TD>" + "%.4f" % pos[5] + "</TD><TD>(DMS,m)</TD></TR>\n"\
-                + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Vel(N,E,D):</TD><TD>"\
-                + "%.4f" % pos[13] + "</TD><TD>" + "%.4f" % pos[14] + "</TD><TD>" + "%.4f" % (-pos[15]) + "</TD><TD>(m/s)</TD></TR>\n"\
-                + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Att(r,p,h):</TD><TD>"\
-                + "0" + "</TD><TD>" + "0" + "</TD><TD>" + "%.4f" % track_ground + "</TD><TD>(deg,approx)</TD></TR>\n"\
-                + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Mode:</TD><TD>"\
-                + "0" + "</TD><TD>" + str(pos[2]) + "</TD><TR>\n"\
-                + "</TABLE>\n"\
-                + "]]></description>\n"
             
-            gnss_track += "<styleUrl>#P" + str(pos[2]) + "</styleUrl>\n"\
-                    + "<Style>\n"\
-                    + "<IconStyle>\n"\
-                    + "<heading>" + "%.4f" % track_ground + "</heading>\n"\
-                    + "</IconStyle>\n"\
-                    + "</Style>\n"
+            if pos[2] == 0:
+                pass
+            else:
+                track_ground = math.atan2(pos[14], pos[13]) * (57.295779513082320)
 
-            gnss_track += "<Point>\n"\
-                    + "<coordinates>" + "%.9f,%.9f,%.3f" % (pos[4], pos[3], pos[5]) + "</coordinates>\n"\
-                    + "</Point>\n"
+                gnss_track += "<Placemark>\n"
+                if i <= 1:
+                    gnss_track += "<name>Start</name>\n"
+                elif i == len(self.gnssdata)-1:
+                    gnss_track += "<name>End</name>\n"
+                else:
+                    if math.fmod(ep_sp[5]+(pos[1]%1000)/1000+0.025, 30) < 0.05:
+                        gnss_track += "<name>"\
+                            + "%02d" % ep_sp[3] + "%02d" % ep_sp[4] + "%02d" % ep_sp[5]\
+                            + "</name>\n"
 
-            gnss_track += "</Placemark>\n"
+                gnss_track += "<TimeStamp><when>"\
+                        + time.strftime("%Y-%m-%dT%H:%M:%S.", ep_sp)\
+                        + "%02dZ" % ((pos[1]%1000)/10)\
+                        + "</when></TimeStamp>\n"
+
+                gnss_track += "<description><![CDATA[\n"\
+                    + "<TABLE border=\"1\" width=\"100%\" Align=\"center\">\n"\
+                    + "<TR ALIGN=RIGHT>\n"\
+                    + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Time:</TD><TD>"\
+                    + str(pos[0]) + "</TD><TD>" + "%.3f" % (pos[1]/1000) + "</TD><TD>"\
+                    + "%2d:%2d:%7.4f" % (ep_sp[3],ep_sp[4],ep_sp[5]+(pos[1]%1000)/1000) + "</TD><TD>"\
+                    + "%4d/%2d/%2d" % (ep_sp[0], ep_sp[1], ep_sp[2]) + "</TD></TR>\n"\
+                    + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Position:</TD><TD>"\
+                    + "%.8f" % pos[3] + "</TD><TD>" + "%.8f" % pos[4] + "</TD><TD>" + "%.4f" % pos[5] + "</TD><TD>(DMS,m)</TD></TR>\n"\
+                    + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Vel(N,E,D):</TD><TD>"\
+                    + "%.4f" % pos[13] + "</TD><TD>" + "%.4f" % pos[14] + "</TD><TD>" + "%.4f" % (-pos[15]) + "</TD><TD>(m/s)</TD></TR>\n"\
+                    + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Att(r,p,h):</TD><TD>"\
+                    + "0" + "</TD><TD>" + "0" + "</TD><TD>" + "%.4f" % track_ground + "</TD><TD>(deg,approx)</TD></TR>\n"\
+                    + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Mode:</TD><TD>"\
+                    + "0" + "</TD><TD>" + str(pos[2]) + "</TD><TR>\n"\
+                    + "</TABLE>\n"\
+                    + "]]></description>\n"
+                
+                gnss_track += "<styleUrl>#P" + str(pos[2]) + "</styleUrl>\n"\
+                        + "<Style>\n"\
+                        + "<IconStyle>\n"\
+                        + "<heading>" + "%.4f" % track_ground + "</heading>\n"\
+                        + "</IconStyle>\n"\
+                        + "</Style>\n"
+
+                gnss_track += "<Point>\n"\
+                        + "<coordinates>" + "%.9f,%.9f,%.3f" % (pos[4], pos[3], pos[5]) + "</coordinates>\n"\
+                        + "</Point>\n"
+
+                gnss_track += "</Placemark>\n"
 
         gnss_track += "</Folder>\n"\
                 + "</Document>\n"\
@@ -640,6 +654,9 @@ class UserRawParse:
         
 
     def save_ins_kml(self):
+        '''
+        '''
+        # white-cyan, red, purple, light-yellow, green, yellow
         color = ["ffffffff","ff0000ff","ffff00ff","50FF78F0","ff00ff00","ff00aaff"]
         kml_header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"\
                 + "<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n"\
@@ -669,6 +686,9 @@ class UserRawParse:
             ep_sp = time.strptime(ep, "%Y-%m-%d %H:%M:%S")
 
             if math.fmod(ep_sp[5]+(ins[1]%1000)/1000+0.0005, self.inskml_rate) < 0.005:
+                if abs(ins[5]*ins[4]) < 0.00000001:
+                    continue
+                
                 ins_track += format(ins[5], ".9f") + ',' + format(ins[4], ".9f") + ',' + format(ins[6], ".3f") + '\n'
 
         ins_track += "</coordinates>\n"\
@@ -713,22 +733,22 @@ class UserRawParse:
                     + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Att(r,p,h):</TD><TD>"\
                     + "%.4f" % ins[10] + "</TD><TD>" + "%.4f" % ins[11] + "</TD><TD>" + "%.4f" % ins[12] + "</TD><TD>(deg,approx)</TD></TR>\n"\
                     + "<TR ALIGN=RIGHT><TD ALIGN=LEFT>Mode:</TD><TD>"\
-                    + "0" + "</TD><TD>" + str(ins[3]) + "</TD><TR>\n"\
+                    + str(ins[2]) + "</TD><TD>" + str(ins[3]) + "</TD><TR>\n"\
                     + "</TABLE>\n"\
                     + "]]></description>\n"
                 
                 pcolor = 0
-                if ins[2] == 0:     # "INS_INACTIVE"
+                if ins[3] == 0:     # "INS_INACTIVE"
                     pcolor = 0
-                elif ins[2] == 1:   # "INS_ALIGNING"
-                    pcolor = 2
-                elif ins[2] == 2:   # "INS_HIGH_VARIANCE"
-                    pcolor = 4
-                elif ins[2] == 3:   # "INS_SOLUTION_GOOD"
-                    pcolor = 4
-                elif ins[2] == 4:   # "INS_SOLUTION_FREE"
+                elif ins[3] == 1:   # "SPP/INS_SPP"
                     pcolor = 1
-                elif ins[2] == 5:   # "INS_ALIGNMENT_COMPLETE"
+                elif ins[3] == 2:   # "PSRDIFF/INS_PSRDIFF (RTD)"
+                    pcolor = 2
+                elif ins[3] == 3:   # "INS_DR"
+                    pcolor = 3
+                elif ins[3] == 4:   # "RTK_FIX/INS_RTKFIXED"
+                    pcolor = 4
+                elif ins[3] == 5:   # "RTK_FLOAT/INS_RTKFLOAT"
                     pcolor = 5
                 # pcolor = 4
 
@@ -756,6 +776,10 @@ class UserRawParse:
             v.close()
         self.f_nmea.close()
         self.f_process.close()
+        self.f_gnssposvel.close()
+        self.f_imu.close()
+        self.f_odo.close()
+        self.f_ins.close()
         self.f_gnss_kml.close()
         self.f_ins_kml.close()
         self.log_files.clear()
@@ -778,7 +802,7 @@ class UserRawParse:
         if output['name'] == 's1':
             buffer = '$GPIMU,'
             buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
-            buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + ","
+            buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + "," + "    ,"
             buffer = buffer + format(data[2], output['payload'][2]['format']) + ","
             buffer = buffer + format(data[3], output['payload'][3]['format']) + ","
             buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
@@ -786,6 +810,18 @@ class UserRawParse:
             buffer = buffer + format(data[6], output['payload'][6]['format']) + ","
             buffer = buffer + format(data[7], output['payload'][7]['format']) + "\n"
             self.f_process.write(buffer)
+
+            buffer = ''
+            buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
+            buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + "," + "    ,"
+            buffer = buffer + format(data[2], output['payload'][2]['format']) + ","
+            buffer = buffer + format(data[3], output['payload'][3]['format']) + ","
+            buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
+            buffer = buffer + format(data[5], output['payload'][5]['format']) + ","
+            buffer = buffer + format(data[6], output['payload'][6]['format']) + ","
+            buffer = buffer + format(data[7], output['payload'][7]['format']) + "\n"
+            self.f_imu.write(buffer)
+
             # if self.last_time != 0:
             #     now_time = data[0] * 604800 * 1000 + data[1]
             #     if now_time - self.last_time > 10:
@@ -817,10 +853,27 @@ class UserRawParse:
             buffer = buffer + format(data[15], output['payload'][15]['format']) + "\n"
             self.f_process.write(buffer)
 
+            buffer = ''
+            buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
+            buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + ","
+            buffer = buffer + format(data[3], output['payload'][3]['format']) + ","
+            buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
+            buffer = buffer + format(data[5], output['payload'][5]['format']) + ","
+            buffer = buffer + format(data[6], output['payload'][6]['format']) + ","
+            buffer = buffer + format(data[7], output['payload'][7]['format']) + ","
+            buffer = buffer + format(data[8], output['payload'][8]['format']) + ","
+            buffer = buffer + format(data[2], output['payload'][2]['format']) + ","
+            buffer = buffer + format(data[13],output['payload'][13]['format']) + ","
+            buffer = buffer + format(data[14],output['payload'][14]['format']) + ","
+            buffer = buffer + format(data[15],output['payload'][15]['format']) + ","
+            track_over_ground = math.atan2(data[14], data[13]) * (57.295779513082320)
+            buffer = buffer + format(track_over_ground, output['payload'][14]['format']) + "\n"
+            self.f_gnssposvel.write(buffer)
+
             self.gnssdata.append(data)
         
         elif output['name'] == 'o1':
-            buffer = '$ODO,'
+            buffer = '$GPODO,'
             buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
             buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + ","
             buffer = buffer + format(data[2], output['payload'][2]['format']) + ","
@@ -828,6 +881,15 @@ class UserRawParse:
             buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
             buffer = buffer + format(data[5], output['payload'][5]['format']) + "\n"
             self.f_process.write(buffer)
+
+            buffer = ''
+            buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
+            buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + ","
+            buffer = buffer + format(data[2], output['payload'][2]['format']) + ","
+            buffer = buffer + format(data[3], output['payload'][3]['format']) + ","
+            buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
+            buffer = buffer + format(data[5], output['payload'][5]['format']) + "\n"
+            self.f_odo.write(buffer)
 
         elif output['name'] == 'i1':
             if data[1] % 100 == 0:
@@ -846,7 +908,24 @@ class UserRawParse:
                 buffer = buffer + format(data[3], output['payload'][3]['format']) + "\n"
                 self.f_process.write(buffer)
 
-                self.insdata.append(data)
+                buffer = ''
+                buffer = buffer + format(data[0], output['payload'][0]['format']) + ","
+                buffer = buffer + format(data[1]/1000, output['payload'][1]['format']) + ","
+                buffer = buffer + format(data[4], output['payload'][4]['format']) + ","
+                buffer = buffer + format(data[5], output['payload'][5]['format']) + ","
+                buffer = buffer + format(data[6], output['payload'][6]['format']) + ","
+                buffer = buffer + format(data[7], output['payload'][7]['format']) + ","
+                buffer = buffer + format(data[8], output['payload'][8]['format']) + ","
+                buffer = buffer + format(data[9], output['payload'][9]['format']) + ","
+                buffer = buffer + format(data[10], output['payload'][10]['format']) + ","
+                buffer = buffer + format(data[11], output['payload'][11]['format']) + ","
+                buffer = buffer + format(data[12], output['payload'][12]['format']) + ","
+                buffer = buffer + format(data[3], output['payload'][3]['format']) + ","
+                buffer = buffer + format(data[2], output['payload'][2]['format']) + "\n"         
+                self.f_ins.write(buffer)
+
+                if abs(data[5]*data[4]) > 0.00000001:
+                    self.insdata.append(data)
 
     def parse_output_packet_payload(self, packet_type):
         payload_lenth = self.packet_buffer[2]

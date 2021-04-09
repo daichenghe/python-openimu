@@ -22,10 +22,8 @@ class Provider(RTKProviderBase):
     def __init__(self, communicator, *args):
         super(Provider, self).__init__(communicator)
         self.bootloader_baudrate = 115200
-
-    # override
-    def after_bootloader_switch(self):
-        self.communicator.serial_port.baudrate = self.bootloader_baudrate
+        self.config_file_name = 'openrtk.json'
+        self.device_category = 'OpenRTK'
 
     def thread_debug_port_receiver(self, *args, **kwargs):
         if self.debug_logf is None:
@@ -80,13 +78,13 @@ class Provider(RTKProviderBase):
                 time.sleep(0.001)
 
     # override
-    def append_to_upgrade_center(self, upgrade_center, rule, content):
+    def build_worker(self, rule, content):
         if rule == 'rtk':
-            firmware_worker = FirmwareUpgradeWorker(self.communicator, content)
+            firmware_worker = FirmwareUpgradeWorker(
+                self.communicator, self.bootloader_baudrate, content)
             firmware_worker.on(
                 FIRMWARE_EVENT_TYPE.FIRST_PACKET, lambda: time.sleep(8))
-            upgrade_center.register(firmware_worker)
-            return
+            return firmware_worker
 
         if rule == 'sdk':
             sdk_port = ''
@@ -99,13 +97,12 @@ class Provider(RTKProviderBase):
                         if uart['name'] == 'SDK':
                             sdk_port = uart["value"]
 
-            sdk_uart = serial.Serial(sdk_port, 115200, timeout=0.1)
+            sdk_uart = serial.Serial(
+                sdk_port, self.bootloader_baudrate, timeout=0.1)
             if not sdk_uart.isOpen():
                 raise Exception('Cannot open SDK upgrade port')
 
-            upgrade_center.register(
-                SDKUpgradeWorker(sdk_uart, content))
-            return
+            return SDKUpgradeWorker(sdk_uart, content)
 
     # command list
     # use base methods

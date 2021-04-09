@@ -15,9 +15,9 @@ from ...framework.utils import (
 from ...framework.context import APP_CONTEXT
 from ...framework.utils.firmware_parser import parser as firmware_content_parser
 from ...framework.utils.print import (print_green, print_yellow, print_red)
-from ..base.provider_base import OpenDeviceBase
+from ..base import OpenDeviceBase
 from ..configs.openrtk_predefine import (
-    APP_STR, get_openrtk_products
+    APP_STR, get_openrtk_products, get_configuratin_file_mapping
 )
 from ..decorator import with_device_message
 from ...models import InternalCombineAppParseRule
@@ -58,17 +58,20 @@ class RTKProviderBase(OpenDeviceBase):
         self.ntrip_client_enable = False
         self.nmea_buffer = []
         self.nmea_sync = 0
+        self.config_file_name = 'openrtk.json'
+        self.device_category = 'RTK'
         self.prepare_folders()
         self.ntripClient = None
+        self.rtk_log_file_name = ''
         self.connected = True
 
     def prepare_folders(self):
         '''
         Prepare folders for data storage and configuration
         '''
+
         executor_path = resource.get_executor_path()
         setting_folder_name = 'setting'
-        config_file_name = 'openrtk.json'
 
         data_folder_path = os.path.join(executor_path, 'data')
         if not os.path.isdir(data_folder_path):
@@ -80,6 +83,7 @@ class RTKProviderBase(OpenDeviceBase):
             executor_path, setting_folder_name)
 
         all_products = get_openrtk_products()
+        config_file_mapping = get_configuratin_file_mapping()
 
         for product in all_products:
             product_folder = os.path.join(self.setting_folder_path, product)
@@ -89,18 +93,36 @@ class RTKProviderBase(OpenDeviceBase):
             for app_name in all_products[product]:
                 app_name_path = os.path.join(product_folder, app_name)
                 app_name_config_path = os.path.join(
-                    app_name_path, config_file_name)
+                    app_name_path, config_file_mapping[product])
 
                 if not os.path.isfile(app_name_config_path):
                     if not os.path.isdir(app_name_path):
                         os.makedirs(app_name_path)
                     app_config_content = resource.get_content_from_bundle(
-                        setting_folder_name, os.path.join(product, app_name, config_file_name))
+                        setting_folder_name,
+                        os.path.join(product,
+                                     app_name,
+                                     config_file_mapping[product]))
                     if app_config_content is None:
                         continue
 
                     with open(app_name_config_path, "wb") as code:
                         code.write(app_config_content)
+
+    @property
+    def is_in_bootloader(self):
+        ''' Check if the connected device is in bootloader mode
+        '''
+        if not self.app_info or not self.app_info.__contains__('version'):
+            return False
+
+        version = self.app_info['version']
+        version_splits = version.split(',')
+        if len(version_splits) == 1:
+            if 'bootloader' in version_splits[0].lower():
+                return True
+
+        return False
 
     def bind_device_info(self, device_access, device_info, app_info):
         self._build_device_info(device_info)
@@ -110,7 +132,7 @@ class RTKProviderBase(OpenDeviceBase):
         port_name = device_access.port
 
         return '# Connected {0} with UART on {1} #\nDevice:{2} \nFirmware:{3}'\
-            .format('OpenRTK', port_name, device_info, app_info)
+            .format(self.device_category, port_name, device_info, app_info)
 
     def _build_device_info(self, text):
         '''
@@ -141,7 +163,7 @@ class RTKProviderBase(OpenDeviceBase):
             (item for item in APP_STR if item in split_text), None)
 
         if not app_name:
-            app_name = 'INS'
+            app_name = 'RTK_INS'
             self.is_app_matched = False
         else:
             self.is_app_matched = True
@@ -152,18 +174,20 @@ class RTKProviderBase(OpenDeviceBase):
         }
 
     def load_properties(self):
+        product_name = self.device_info['name']
+        app_name = self.app_info['app_name']
+
         # Load config from user working path
-        local_config_file_path = os.path.join(os.getcwd(), 'openrtk.json')
+        local_config_file_path = os.path.join(
+            os.getcwd(), self.config_file_name)
         if os.path.isfile(local_config_file_path):
             with open(local_config_file_path) as json_data:
                 self.properties = json.load(json_data)
                 return
 
         # Load the openimu.json based on its app
-        product_name = self.device_info['name']
-        app_name = self.app_info['app_name']
         app_file_path = os.path.join(
-            self.setting_folder_path, product_name, app_name, 'openrtk.json')
+            self.setting_folder_path, product_name, app_name, self.config_file_name)
 
         if not self.is_app_matched:
             print_yellow(
@@ -195,23 +219,45 @@ class RTKProviderBase(OpenDeviceBase):
         return user_port_num, port_name
 
     def after_setup(self):
+        local_time = time.localtime()
+        formatted_dir_time = time.strftime("%Y%m%d_%H%M%S", local_time)
+        formatted_file_time = time.strftime("%Y_%m_%d_%H_%M_%S", local_time)
+        debug_port = ''
+        rtcm_port = ''
         set_user_para = self.cli_options and self.cli_options.set_user_para
         self.ntrip_client_enable = self.cli_options and self.cli_options.ntrip_client
-        # with_raw_log = self.cli_options and self.cli_options.with_raw_log
 
+        if self.data_folder is None:
+            raise Exception(
+                'Data folder does not exists, please check if the application has create folder permission')
+
+        try:
+            self.rtk_log_file_name = os.path.join(
+                self.data_folder, '{0}_log_{1}'.format(self.device_category.lower(), formatted_dir_time))
+            os.mkdir(self.rtk_log_file_name)
+        except:
+            raise Exception(
+                'Cannot create log folder, please check if the application has create folder permission')
+
+        # save parameters to data log folder after device is successfully detected
+        self.save_parameters_result(os.path.join(
+            self.rtk_log_file_name, 'parameters_{0}.json'.format(formatted_file_time)))
+
+        # set parameters from predefined parameters
         if set_user_para:
             result = self.set_params(
                 self.properties["initial"]["userParameters"])
             if (result['packetType'] == 'success'):
                 self.save_config()
 
-        if self.ntrip_client_enable:
-            t = threading.Thread(target=self.ntrip_client_thread)
-            t.start()
+            # check saved result
+            self.check_predefined_result()
 
-        # if with_raw_log:
-        debug_port = ''
-        rtcm_port = ''
+        # start ntrip client
+        if self.ntrip_client_enable:
+            thead = threading.Thread(target=self.ntrip_client_thread)
+            thead.start()
+
         try:
             if (self.properties["initial"]["useDefaultUart"]):
                 user_port_num, port_name = self.build_connected_serial_port_info()
@@ -227,45 +273,36 @@ class RTKProviderBase(OpenDeviceBase):
                         elif x['name'] == 'GNSS':
                             rtcm_port = x["value"]
 
-            if self.data_folder is not None:
-                dir_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                file_time = time.strftime(
-                    "%Y_%m_%d_%H_%M_%S", time.localtime())
-                file_name = self.data_folder + '/' + 'openrtk_log_' + dir_time
-                os.mkdir(file_name)
-                self.user_logf = open(
-                    file_name + '/' + 'user_' + file_time + '.bin', "wb")
+            self.user_logf = open(os.path.join(
+                self.rtk_log_file_name, 'user_{0}.bin'.format(formatted_file_time)), "wb")
 
             if rtcm_port != '':
-                print_green('OpenRTK log GNSS UART {0}'.format(rtcm_port))
+                print_green('{0} log GNSS UART {1}'.format(
+                    self.device_category, rtcm_port))
                 self.rtcm_serial_port = serial.Serial(
                     rtcm_port, '460800', timeout=0.1)
                 if self.rtcm_serial_port.isOpen():
                     self.rtcm_logf = open(
-                        file_name + '/' + 'rtcm_rover_' + file_time + '.bin', "wb")
-                    t = threading.Thread(
-                        target=self.thread_rtcm_port_receiver, args=(file_name,))
-                    t.start()
+                        os.path.join(self.rtk_log_file_name, 'rtcm_rover_{0}.bin'.format(
+                            formatted_file_time)), "wb")
+                    thead = threading.Thread(
+                        target=self.thread_rtcm_port_receiver, args=(self.rtk_log_file_name,))
+                    thead.start()
 
             if debug_port != '':
-                print_green('OpenRTK log DEBUG UART {0}'.format(debug_port))
+                print_green('{0} log DEBUG UART {1}'.format(
+                    self.device_category, debug_port))
                 self.debug_serial_port = serial.Serial(
                     debug_port, '460800', timeout=0.1)
                 if self.debug_serial_port.isOpen():
-                    if self.app_info['app_name'] == 'RAWDATA':
-                        self.debug_logf = open(
-                            file_name + '/' + 'rtcm_base_' + file_time + '.bin', "wb")
-                    elif self.app_info['app_name'] == 'RTK':
-                        self.debug_logf = open(
-                            file_name + '/' + 'rtcm_base_' + file_time + '.bin', "wb")
-                    else:
-                        self.debug_logf = open(
-                            file_name + '/' + 'rtcm_base_' + file_time + '.bin', "wb")
-                    t = threading.Thread(
-                        target=self.thread_debug_port_receiver, args=(file_name,))
-                    t.start()
+                    self.debug_logf = open(
+                        os.path.join(self.rtk_log_file_name, 'rtcm_base_{0}.bin'.format(
+                            formatted_file_time)), "wb")
+                    thead = threading.Thread(
+                        target=self.thread_debug_port_receiver, args=(self.rtk_log_file_name,))
+                    thead.start()
 
-        except Exception as e:
+        except Exception:
             if self.debug_serial_port is not None:
                 if self.debug_serial_port.isOpen():
                     self.debug_serial_port.close()
@@ -277,10 +314,6 @@ class RTKProviderBase(OpenDeviceBase):
             print_red(
                 'Can not log GNSS UART or DEBUG UART, pls check uart driver and connection!')
             return False
-
-    @abstractmethod
-    def after_bootloader_switch(self):
-        pass
 
     def nmea_checksum(self, data):
         data = data.replace("\r", "").replace("\n", "").replace("$", "")
@@ -353,7 +386,7 @@ class RTKProviderBase(OpenDeviceBase):
                 # $GPGGA
                 gpgga = '$GPGGA'
                 # time
-                timeOfWeek = float(data['GPS_TimeofWeek'])
+                timeOfWeek = float(data['GPS_TimeofWeek']) - 18
                 dsec = int(timeOfWeek)
                 msec = timeOfWeek - dsec
                 sec = dsec % 86400
@@ -361,7 +394,7 @@ class RTKProviderBase(OpenDeviceBase):
                 minute = int(sec % 3600 / 60)
                 second = sec % 60
                 gga_time = format(hour*10000 + minute*100 +
-                                  second + msec - 18, '09.2f')
+                                  second + msec, '09.2f')
                 gpgga = gpgga + ',' + gga_time
                 # latitude
                 latitude = float(data['latitude']) * 180 / 2147483648.0
@@ -418,7 +451,7 @@ class RTKProviderBase(OpenDeviceBase):
                     if self.pS_data:
                         if self.pS_data['GPS_Week'] == data['GPS_Week']:
                             if data['GPS_TimeofWeek'] - self.pS_data['GPS_TimeofWeek'] >= 0.2:
-                                self.add_output_packet('stream', 'pos', data)
+                                self.add_output_packet('pos', data)
                                 self.pS_data = data
 
                                 if data['insStatus'] >= 3 and data['insStatus'] <= 5:
@@ -445,10 +478,10 @@ class RTKProviderBase(OpenDeviceBase):
                                          data['roll'], data['pitch'], data['heading'])
                                     APP_CONTEXT.get_print_logger().info(inspva)
                         else:
-                            self.add_output_packet('stream', 'pos', data)
+                            self.add_output_packet('pos', data)
                             self.pS_data = data
                     else:
-                        self.add_output_packet('stream', 'pos', data)
+                        self.add_output_packet('pos', data)
                         self.pS_data = data
             except Exception as e:
                 pass
@@ -458,8 +491,8 @@ class RTKProviderBase(OpenDeviceBase):
                 if self.sky_data[0]['timeOfWeek'] == data[0]['timeOfWeek']:
                     self.sky_data.extend(data)
                 else:
-                    self.add_output_packet('stream', 'skyview', self.sky_data)
-                    self.add_output_packet('stream', 'snr', self.sky_data)
+                    self.add_output_packet('skyview', self.sky_data)
+                    self.add_output_packet('snr', self.sky_data)
                     self.sky_data = []
                     self.sky_data.extend(data)
             else:
@@ -486,7 +519,7 @@ class RTKProviderBase(OpenDeviceBase):
                 self.ps_dic['north_vel_std'] = data['north_vel_standard_deviation']
                 self.ps_dic['east_vel_std'] = data['east_vel_standard_deviation']
                 self.ps_dic['up_vel_std'] = data['up_vel_standard_deviation']
-                self.add_output_packet('stream', 'pos', self.ps_dic)
+                self.add_output_packet('pos', self.ps_dic)
 
         elif packet_type == 'i1':
             self.inspva_flag = 1
@@ -517,15 +550,15 @@ class RTKProviderBase(OpenDeviceBase):
                 self.ps_dic['roll_std'] = data['roll_std']
                 self.ps_dic['pitch_std'] = data['pitch_std']
                 self.ps_dic['heading_std'] = data['heading_std']
-                self.add_output_packet('stream', 'pos', self.ps_dic)
+                self.add_output_packet('pos', self.ps_dic)
 
         elif packet_type == 'y1':
             if self.sky_data:
                 if self.sky_data[0]['GPS_TimeOfWeek'] == data[0]['GPS_TimeOfWeek']:
                     self.sky_data.extend(data)
                 else:
-                    self.add_output_packet('stream', 'skyview', self.sky_data)
-                    self.add_output_packet('stream', 'snr', self.sky_data)
+                    self.add_output_packet('skyview', self.sky_data)
+                    self.add_output_packet('snr', self.sky_data)
                     self.sky_data = []
                     self.sky_data.extend(data)
             else:
@@ -539,15 +572,16 @@ class RTKProviderBase(OpenDeviceBase):
                     and output_packet_config['active']:
                 timeOfWeek = int(data['GPS_TimeOfWeek']) % 60480000
                 data['GPS_TimeOfWeek'] = timeOfWeek / 1000
-                self.add_output_packet('stream', 'imu', data)
+                self.add_output_packet('imu', data)
 
     @abstractmethod
-    def append_to_upgrade_center(self, upgrade_center, rule, content):
-        ''' Append worker to upgrade center
+    def build_worker(self, rule, content):
+        ''' Build upgarde worker by rule and content
         '''
         pass
 
-    def do_write_firmware(self, firmware_content):
+    def get_upgrade_workers(self, firmware_content):
+        workers = []
         rules = [
             InternalCombineAppParseRule('rtk', 'rtk_start:', 4),
             InternalCombineAppParseRule('sdk', 'sdk_start:', 4),
@@ -556,18 +590,12 @@ class RTKProviderBase(OpenDeviceBase):
         parsed_content = firmware_content_parser(firmware_content, rules)
 
         # foreach parsed content, if empty, skip register into upgrade center
-        upgrade_center = UpgradeCenter()
         for _, rule in enumerate(parsed_content):
             content = parsed_content[rule]
             if len(content) > 0:
-                self.append_to_upgrade_center(upgrade_center, rule, content)
+                workers.append(self.build_worker(rule, content))
 
-        upgrade_center.on('progress', self.handle_upgrade_process)
-        upgrade_center.on('error', self.handle_upgrade_error)
-        upgrade_center.on('finish', self.handle_upgrade_complete)
-        upgrade_center.start()
-
-        return upgrade_center.total
+        return workers
 
     def get_device_connection_info(self):
         return {
@@ -577,6 +605,68 @@ class RTKProviderBase(OpenDeviceBase):
             'partNumber': self.device_info['pn'],
             'firmware': self.device_info['firmware_version']
         }
+
+    def save_parameters_result(self, file_path):
+        if self.is_in_bootloader:
+            return
+
+        result = self.get_params()
+        if result['packetType'] == 'inputParams':
+            with open(file_path, 'w') as outfile:
+                json.dump(result['data'], outfile)
+
+    def check_predefined_result(self):
+        local_time = time.localtime()
+        formatted_file_time = time.strftime("%Y_%m_%d_%H_%M_%S", local_time)
+        file_path = os.path.join(
+            self.rtk_log_file_name,
+            'parameters_predefined_{0}.json'.format(formatted_file_time)
+        )
+        # save parameters to data log folder after predefined parameters setup
+        result = self.get_params()
+        if result['packetType'] == 'inputParams':
+            with open(file_path, 'w') as outfile:
+                json.dump(result['data'], outfile)
+
+        # compare saved parameters with predefined parameters
+        hashed_predefined_parameters = helper.collection_to_dict(
+            self.properties["initial"]["userParameters"], key='paramId')
+        hashed_current_parameters = helper.collection_to_dict(
+            result['data'], key='paramId')
+
+        success_count = 0
+        fail_count = 0
+        fail_parameters = []
+        for key in hashed_predefined_parameters:
+            if hashed_current_parameters[key]['value'] == \
+                    hashed_predefined_parameters[key]['value']:
+                success_count += 1
+            else:
+                fail_count += 1
+                fail_parameters.append(
+                    hashed_predefined_parameters[key]['name'])
+
+        check_result = 'Predefined Parameters are saved. Success ({0}), Fail ({1})'.format(
+            success_count, fail_count)
+        if success_count == len(hashed_predefined_parameters.keys()):
+            print_green(check_result)
+
+        if fail_count > 0:
+            print_yellow(check_result)
+            print_yellow('The failed parameters: {0}'.format(fail_parameters))
+
+    def after_upgrade_completed(self):
+        local_time = time.localtime()
+        formatted_file_time = time.strftime("%Y_%m_%d_%H_%M_%S", local_time)
+        file_path = os.path.join(
+            self.rtk_log_file_name, 'parameters_{0}.json'.format(formatted_file_time))
+        self.save_parameters_result(file_path)
+
+    def get_operation_status(self):
+        if self.is_logging:
+            return 'LOGGING'
+
+        return 'IDLE'
 
     # command list
     def server_status(self, *args):  # pylint: disable=invalid-name
@@ -639,7 +729,7 @@ class RTKProviderBase(OpenDeviceBase):
         has_error = False
         parameter_values = []
 
-        if self.app_info['app_name'] == 'INS':
+        if self.app_info['app_name'] == 'RTK_INS':
             conf_parameters = self.properties['userConfiguration']
             conf_parameters_len = len(conf_parameters)-1
             step = 10

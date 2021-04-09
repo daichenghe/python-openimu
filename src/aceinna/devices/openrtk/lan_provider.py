@@ -6,7 +6,7 @@ import threading
 import math
 import re
 from ..widgets import (
-    NTRIPClient, LanDataLogger
+    NTRIPClient, LanDataLogger, LanDebugDataLogger, LanRTCMDataLogger
 )
 from ...framework.utils import (
     helper, resource
@@ -14,7 +14,7 @@ from ...framework.utils import (
 from ...framework.context import APP_CONTEXT
 from ..base.provider_base import OpenDeviceBase
 from ..configs.openrtk_predefine import (
-    APP_STR, get_openrtk_products
+    APP_STR, get_openrtk_products, get_configuratin_file_mapping
 )
 from ..decorator import with_device_message
 from ..parsers.open_field_parser import encode_value
@@ -59,7 +59,6 @@ class Provider(OpenDeviceBase):
         '''
         executor_path = resource.get_executor_path()
         setting_folder_name = 'setting'
-        config_file_name = 'openrtk.json'
 
         data_folder_path = os.path.join(executor_path, 'data')
         if not os.path.isdir(data_folder_path):
@@ -71,6 +70,7 @@ class Provider(OpenDeviceBase):
             executor_path, setting_folder_name, 'openrtk')
 
         all_products = get_openrtk_products()
+        config_file_mapping = get_configuratin_file_mapping()
 
         for product in all_products:
             product_folder = os.path.join(self.setting_folder_path, product)
@@ -80,13 +80,13 @@ class Provider(OpenDeviceBase):
             for app_name in all_products[product]:
                 app_name_path = os.path.join(product_folder, app_name)
                 app_name_config_path = os.path.join(
-                    app_name_path, config_file_name)
+                    app_name_path, config_file_mapping[product])
 
                 if not os.path.isfile(app_name_config_path):
                     if not os.path.isdir(app_name_path):
                         os.makedirs(app_name_path)
                     app_config_content = resource.get_content_from_bundle(
-                        setting_folder_name, os.path.join(product, app_name, config_file_name))
+                        setting_folder_name, os.path.join(product, app_name, config_file_mapping[product]))
                     if app_config_content is None:
                         continue
 
@@ -158,7 +158,7 @@ class Provider(OpenDeviceBase):
             (item for item in APP_STR if item in split_text), None)
 
         if not app_name:
-            app_name = 'INS'
+            app_name = 'RTK_INS'
             self.is_app_matched = False
         else:
             self.is_app_matched = True
@@ -221,18 +221,19 @@ class Provider(OpenDeviceBase):
                 os.mkdir(file_name)
                 self.user_logf = open(
                     file_name + '/' + 'user_' + file_time + '.bin', "wb")
+                self.debug_logf = open(
+                    file_name + '/' + 'debug_' + file_time + '.bin', "wb")
+                self.rtcm_logf = open(
+                    file_name + '/' + 'rtcm_' + file_time + '.bin', "wb")
 
             # start a thread to log data
-            data_log_thread = threading.Thread(
-                target=self.thread_data_log)
-            data_log_thread.start()
+            threading.Thread(target=self.thread_data_log).start()
+            threading.Thread(target=self.thread_debug_data_log).start()
+            threading.Thread(target=self.thread_rtcm_data_log).start()
 
         except Exception as e:
             print(e)
             return False
-
-    def after_bootloader_switch(self):
-        pass
 
     def nmea_checksum(self, data):
         data = data.replace("\r", "").replace("\n", "").replace("$", "")
@@ -281,6 +282,16 @@ class Provider(OpenDeviceBase):
             self.properties, self.communicator, self.user_logf)
         self.lan_data_logger.run()
 
+    def thread_debug_data_log(self, *args, **kwargs):
+        self.lan_debug_data_logger = LanDebugDataLogger(
+            self.properties, self.communicator, self.debug_logf)
+        self.lan_debug_data_logger.run()
+
+    def thread_rtcm_data_log(self, *args, **kwargs):
+        self.lan_rtcm_data_logger = LanRTCMDataLogger(
+            self.properties, self.communicator, self.rtcm_logf)
+        self.lan_rtcm_data_logger.run()
+
     def on_receive_output_packet(self, packet_type, data, error=None):
         '''
         Listener for getting output packet
@@ -291,7 +302,7 @@ class Provider(OpenDeviceBase):
                 # $GPGGA
                 gpgga = '$GPGGA'
                 # time
-                timeOfWeek = float(data['GPS_TimeofWeek'])
+                timeOfWeek = float(data['GPS_TimeofWeek']) - 18
                 dsec = int(timeOfWeek)
                 msec = timeOfWeek - dsec
                 sec = dsec % 86400
@@ -299,7 +310,7 @@ class Provider(OpenDeviceBase):
                 minute = int(sec % 3600 / 60)
                 second = sec % 60
                 gga_time = format(hour*10000 + minute*100 +
-                                  second + msec - 18, '09.2f')
+                                  second + msec, '09.2f')
                 gpgga = gpgga + ',' + gga_time
                 # latitude
                 latitude = float(data['latitude']) * 180 / 2147483648.0
@@ -356,7 +367,7 @@ class Provider(OpenDeviceBase):
                     if self.pS_data:
                         if self.pS_data['GPS_Week'] == data['GPS_Week']:
                             if data['GPS_TimeofWeek'] - self.pS_data['GPS_TimeofWeek'] >= 0.2:
-                                self.add_output_packet('stream', 'pos', data)
+                                self.add_output_packet('pos', data)
                                 self.pS_data = data
 
                                 if data['insStatus'] >= 3 and data['insStatus'] <= 5:
@@ -383,10 +394,10 @@ class Provider(OpenDeviceBase):
                                          data['roll'], data['pitch'], data['heading'])
                                     print(inspva)
                         else:
-                            self.add_output_packet('stream', 'pos', data)
+                            self.add_output_packet('pos', data)
                             self.pS_data = data
                     else:
-                        self.add_output_packet('stream', 'pos', data)
+                        self.add_output_packet('pos', data)
                         self.pS_data = data
             except Exception as e:
                 # print(e)
@@ -397,8 +408,8 @@ class Provider(OpenDeviceBase):
                 if self.sky_data[0]['timeOfWeek'] == data[0]['timeOfWeek']:
                     self.sky_data.extend(data)
                 else:
-                    self.add_output_packet('stream', 'skyview', self.sky_data)
-                    self.add_output_packet('stream', 'snr', self.sky_data)
+                    self.add_output_packet('skyview', self.sky_data)
+                    self.add_output_packet('snr', self.sky_data)
                     self.sky_data = []
                     self.sky_data.extend(data)
             else:
@@ -410,7 +421,7 @@ class Provider(OpenDeviceBase):
                  if x['name'] == packet_type), None)
             if output_packet_config and output_packet_config.__contains__('from') \
                     and output_packet_config['from'] == 'imu':
-                self.add_output_packet('stream', 'imu', data)
+                self.add_output_packet('imu', data)
 
     def do_write_firmware(self, firmware_content):
         raise Exception('It is not supported by connecting device with LAN')
@@ -450,6 +461,12 @@ class Provider(OpenDeviceBase):
             'partNumber': self.device_info['pn'],
             'firmware': self.device_info['firmware_version']
         }
+
+    def get_operation_status(self):
+        if self.is_logging:
+            return 'LOGGING'
+
+        return 'IDLE'
 
     # command list
     def server_status(self, *args):  # pylint: disable=invalid-name

@@ -2,12 +2,16 @@ import os
 import time
 import json
 import struct
-from ..base.provider_base import OpenDeviceBase
+from ..base import OpenDeviceBase
 from ..decorator import with_device_message
 from ...framework.utils import (helper, resource)
 from . import dmu_helper
 from .configuration_field import CONFIGURATION_FIELD_DEFINES_SINGLETON
 from .eeprom_field import EEPROM_FIELD_DEFINES_SINGLETON
+from ..upgrade_workers import (
+    FirmwareUpgradeWorker,
+    FIRMWARE_EVENT_TYPE
+)
 
 ID = [0x49, 0x44]
 VR = [0x56, 0x52]
@@ -69,6 +73,17 @@ class Provider(OpenDeviceBase):
 
             with open(config_file_path, "wb") as code:
                 code.write(app_config_content)
+
+    @property
+    def is_in_bootloader(self):
+        ''' Check if the connected device is in bootloader mode
+        '''
+        if not self.device_info or not self.device_info.__contains__('name'):
+            return False
+
+        if 'bootloader' in self.device_info['name'].lower():
+            return True
+        return False
 
     def bind_device_info(self, device_access, device_info, app_info):
         self._build_device_info(device_info)
@@ -138,9 +153,6 @@ class Provider(OpenDeviceBase):
     def after_setup(self):
         self.is_conf_loaded = False
 
-    def after_bootloader_switch(self):
-        self.communicator.serial_port.baudrate = self.bootloader_baudrate
-
     def on_read_raw(self, data):
         pass
 
@@ -148,10 +160,14 @@ class Provider(OpenDeviceBase):
         '''
         Listener for getting output packet
         '''
-        self.add_output_packet('stream', packet_type, data)
+        self.add_output_packet(packet_type, data)
 
-    def do_write_firmware(self, firmware_content):
-        raise Exception('Not implement write firmware.')
+    def get_upgrade_workers(self, firmware_content):
+        firmware_worker = FirmwareUpgradeWorker(
+            self.communicator, self.bootloader_baudrate, firmware_content)
+        firmware_worker.on(
+            FIRMWARE_EVENT_TYPE.FIRST_PACKET, lambda: time.sleep(8))
+        return [firmware_worker]
 
     def get_device_connection_info(self):
         return {
@@ -161,6 +177,18 @@ class Provider(OpenDeviceBase):
             'partNumber': self.device_info['pn'],
             'firmware': self.app_info['version']
         }
+
+    def get_operation_status(self):
+        if self.is_logging:
+            return 'LOGGING'
+
+        if self.is_upgrading:
+            return 'UPGRADING'
+
+        if self.is_mag_align:
+            return 'MAG_ALIGN'
+
+        return 'IDLE'
 
     def get_device_info(self, *args):  # pylint: disable=unused-argument
         '''
@@ -206,6 +234,10 @@ class Provider(OpenDeviceBase):
                 data['value']['architechture'],
                 data['value']['algorithm'],
                 data['value']['mags'])
+
+            if self.device_info['name'].__contains__('INS330BI'):
+                packet_types.append('E3')
+
             for item in input_params:
                 if item['name'] == 'Packet Type':
                     # product_configuration['continuous_packet_types']

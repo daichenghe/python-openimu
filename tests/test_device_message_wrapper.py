@@ -34,7 +34,7 @@ MESSAGE_CENTER = None
 
 DEVICE_TYPE = APP_NAME = 'IMU'
 APP_FILE_PATH = os.path.join(
-    os.getcwd(), 'setting', 'OpenIMU300ZI', APP_NAME, 'openimu.json')
+    os.getcwd(), 'src', 'aceinna', 'setting', 'OpenIMU300ZI', APP_NAME, 'openimu.json')
 PROPERTIES = None
 with open(APP_FILE_PATH) as json_data:
     PROPERTIES = json.load(json_data)
@@ -96,7 +96,7 @@ def send_get_version_timeout_command():
     delay = 2
     command_line = helper.build_input_packet('gV')
     result = yield MESSAGE_CENTER.build(
-        command=test_helper.wrap_delay_response_command(command_line, delay))
+        command=test_helper.wrap_delay_response_command(command_line, delay), timeout=1)
     return result
 
 
@@ -179,7 +179,7 @@ class TestDeviceMessageWrapper(unittest.TestCase):
             result3['packet_type'],
             result3['error'],
         ]
-        expect_result = ['pG', 'gV', 'Timeout', 'gP',False]
+        expect_result = ['pG', 'gV', 'Timeout', 'gP', False]
         self.assertEqual(command_result, expect_result,
                          'Got result after timeout')
         close_message_center()

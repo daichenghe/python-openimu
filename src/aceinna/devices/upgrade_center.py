@@ -1,6 +1,6 @@
 import time
 import threading
-from .base.event_base import EventBase
+from .base import EventBase
 
 
 class UpgradeCenter(EventBase):
@@ -19,6 +19,10 @@ class UpgradeCenter(EventBase):
         worker.key = worker_key
         self.workers[worker_key] = {'executor': worker, 'current': 0}
         self.total += worker.get_upgrade_content_size()
+
+    def register_workers(self, workers):
+        for worker in workers:
+            self.register(worker)
 
     def start(self):
         if self.is_processing:

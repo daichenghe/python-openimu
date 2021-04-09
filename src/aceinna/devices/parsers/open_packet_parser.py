@@ -1,6 +1,7 @@
 import sys
 import struct
 import collections
+from . import filter_nan
 from .open_field_parser import decode_value
 from ...framework.utils.print import print_yellow
 from ...framework.context import APP_CONTEXT
@@ -8,6 +9,7 @@ from ...framework.context import APP_CONTEXT
 
 # input packet
 error_decode_packet = 0
+
 
 def string_parser(payload, user_configuration):
     error = False
@@ -104,7 +106,7 @@ def get_parameters_by_block_parser(payload, user_configuration):
                 data_len = data_len + 2
             elif param_type == 'uint32' or param_type == 'int32' or param_type == 'float':
                 value = decode_value(
-                    param_type, payload[data_len:data_len + 4])
+                    param_type, payload[data_len:data_len + 4], exist_param_conf)
                 data_len = data_len + 4
             elif param_type == 'uint64' or param_type == 'int64' or param_type == 'double':
                 value = decode_value(
@@ -146,7 +148,7 @@ def get_parameter_parser(payload, user_configuration):
     error = False
     param_id = decode_value('uint32', payload[0:4])
 
-    if  param_id is not False:
+    if param_id is not False:
         param = filter(lambda item: item['paramId'] ==
                        param_id, user_configuration)
 
@@ -273,20 +275,23 @@ def common_continuous_parser(payload, configuration):
         try:
             pack_item = struct.pack(len_fmt, *payload)
             data = struct.unpack(pack_fmt, pack_item)
-            out = [(value['name'], data[idx])
-                   for idx, value in enumerate(configuration['payload'])]
+            out = [(
+                value['name'],
+                filter_nan(data[idx])
+            ) for idx, value in enumerate(configuration['payload'])]
+
             data = collections.OrderedDict(out)
         except Exception as ex:  # pylint: disable=broad-except
             global error_decode_packet
             error_decode_packet = error_decode_packet + 1
             if error_decode_packet == 100 or error_decode_packet == 400 or error_decode_packet == 700:
-                print_yellow("warning: your firmware may not suitable for this driver, pls update firmware or driver")
+                print_yellow(
+                    "warning: your firmware may not suitable for this driver, pls update firmware or driver")
 
             if error_decode_packet % 300 == 0:
                 APP_CONTEXT.get_logger().logger.warning(
                     "error happened when decode the payload of packets, pls restart driver: {0}"
                     .format(ex))
-
 
     return data
 
